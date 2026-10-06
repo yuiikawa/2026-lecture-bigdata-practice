@@ -1,21 +1,7 @@
 #!/usr/bin/env python3
-"""Week 3 · Task 3 — Find the same pairs without comparing everything.
+"""Week 3 · Task 3 — Find the same pairs without comparing everything."""
 
-Textbook §3.4.
-
-`BruteForce` compares every pair. On 3,000 documents that is 4.5 million
-comparisons and it is completely correct. On 3 million documents it is 4.5
-trillion and it is completely useless.
-
-Beat it. Find the same near-duplicate pairs while making far fewer comparisons.
-
-    python3 bench.py
-    python3 bench.py --yours
-
-The harness counts every call you make to `similarity()`. That is your score.
-It also checks **recall** - which of the truly similar pairs you found. Skipping
-comparisons is easy; skipping comparisons without losing the pairs is the task.
-"""
+import random
 
 
 class BruteForce:
@@ -27,41 +13,115 @@ class BruteForce:
     def find(self, docs, similarity):
         """docs is [set_of_shingles, ...]. Return {(i, j), ...} with i < j."""
         out = set()
+
         for i in range(len(docs)):
             for j in range(i + 1, len(docs)):
                 if similarity(docs[i], docs[j]) >= self.threshold:
                     out.add((i, j))
+
         return out
 
 
 class YourFinder:
-    """Your near-duplicate finder.
-
-        __init__(threshold)
-        find(docs, similarity) -> {(i, j), ...}
-
-    `similarity(a, b)` is the only way to compare two documents, and every call
-    is counted. Everything else - signatures, banding, bucketing - is free, in
-    the sense that the harness does not charge you for it. That is deliberate:
-    it is also roughly true at scale, where the comparison is the expensive
-    part and the hashing is linear.
-
-    Two knobs decide everything:
-
-        the number of hashes in a signature
-        how many bands you split it into
-
-    §3.4.2 gives you the relationship between those and the probability that a
-    pair at similarity s becomes a candidate. It is an S-curve, and where its
-    step sits is something you choose. Choose it on purpose and be able to say
-    why in observation.md - a threshold of 0.8 does not mean bands should be
-    anything in particular until you have done the arithmetic.
-
-    You may reuse your Task 1 code.
-    """
+    """Near-duplicate finder using MinHash + LSH."""
 
     def __init__(self, threshold):
-        raise NotImplementedError("write your finder")
+        self.threshold = threshold
+
+        # 120 hash functions, split into 30 bands.
+        # Therefore each band contains 4 rows.
+        self.num_hashes = 120
+        self.bands = 30
+        self.rows_per_band = self.num_hashes // self.bands
+
+        # Large prime used for universal hashing.
+        self.prime = 4294967311
+
+        # Fixed seed makes the experiment reproducible.
+        rng = random.Random(42)
+
+        self.hash_params = []
+
+        for _ in range(self.num_hashes):
+            a = rng.randrange(1, self.prime)
+            b = rng.randrange(0, self.prime)
+            self.hash_params.append((a, b))
+
+    def _signature(self, doc):
+        """Create a MinHash signature for one document."""
+
+        if not doc:
+            return [self.prime] * self.num_hashes
+
+        signature = [self.prime] * self.num_hashes
+
+        for shingle in doc:
+            # Convert the shingle to a deterministic integer.
+            if isinstance(shingle, int):
+                x = shingle
+            else:
+                # Deterministic hash independent of Python's randomized hash().
+                data = str(shingle).encode("utf-8")
+
+                x = 2166136261
+                for byte in data:
+                    x ^= byte
+                    x = (x * 16777619) & 0xFFFFFFFF
+
+            for h_idx, (a, b) in enumerate(self.hash_params):
+                value = (a * x + b) % self.prime
+
+                if value < signature[h_idx]:
+                    signature[h_idx] = value
+
+        return signature
 
     def find(self, docs, similarity):
-        raise NotImplementedError
+        """Return near-duplicate pairs using LSH candidate generation."""
+
+        if not docs:
+            return set()
+
+        # Step 1: build MinHash signatures.
+        signatures = [
+            self._signature(doc)
+            for doc in docs
+        ]
+
+        candidates = set()
+
+        # Step 2: split signatures into bands.
+        for band in range(self.bands):
+            buckets = {}
+
+            start = band * self.rows_per_band
+            end = start + self.rows_per_band
+
+            for i, signature in enumerate(signatures):
+                band_value = tuple(signature[start:end])
+
+                if band_value not in buckets:
+                    buckets[band_value] = []
+
+                buckets[band_value].append(i)
+
+            # Documents in the same bucket become candidates.
+            for bucket in buckets.values():
+                if len(bucket) < 2:
+                    continue
+
+                for x in range(len(bucket)):
+                    for y in range(x + 1, len(bucket)):
+                        i = bucket[x]
+                        j = bucket[y]
+
+                        candidates.add((i, j))
+
+        # Step 3: expensive similarity comparison ONLY for candidates.
+        result = set()
+
+        for i, j in candidates:
+            if similarity(docs[i], docs[j]) >= self.threshold:
+                result.add((i, j))
+
+        return result

@@ -30,43 +30,115 @@ BOOK_HASHES = [lambda r: (r + 1) % 5, lambda r: (3 * r + 1) % 5]
 
 def jaccard(a, b):
     """|a and b| / |a or b|. Empty union is 0, not an error."""
-    raise NotImplementedError("jaccard similarity")
+    union = a | b
+
+    if len(union) == 0:
+        return 0
+
+    intersection = a & b
+    return len(intersection) / len(union)
 
 
 def minhash_signatures(columns, hashes, n_rows):
     """Build the signature matrix, one pass over the rows.
 
-    `columns` is [set_of_row_numbers, ...], one entry per document.
+    columns is [set_of_row_numbers, ...], one entry per document.
     Return [[sig for each hash] for each column].
 
-    The algorithm in §3.3.5 walks each row **once** and updates the signature
-    of every column that has a 1 in it:
-
-        sig[h][c] = min(sig[h][c], h(r))
-
-    Doing it that way is the point. If you sort or re-scan per column you have
-    written something correct that does not survive a dataset that does not fit
-    in memory, and not fitting in memory is what this course is about.
+    Each row is visited exactly once.
     """
-    raise NotImplementedError("signature matrix")
+
+    n_cols = len(columns)
+    n_hashes = len(hashes)
+
+    # Initially every signature value is infinity.
+    signatures = [
+        [float("inf")] * n_hashes
+        for _ in range(n_cols)
+    ]
+
+    # R2: walk each row exactly once.
+    for r in range(n_rows):
+
+        # Calculate all hash values for this row.
+        hash_values = [h(r) for h in hashes]
+
+        # Update every column containing this row.
+        for c in range(n_cols):
+            if r in columns[c]:
+
+                for h_idx in range(n_hashes):
+                    signatures[c][h_idx] = min(
+                        signatures[c][h_idx],
+                        hash_values[h_idx]
+                    )
+
+    return signatures
 
 
 def lsh_candidates(signatures, bands):
-    """Split each signature into `bands` bands and hash each band.
+    """Split each signature into bands and hash each band.
 
-    Two columns are candidates if they land in the same bucket for **at least
-    one** band. Return {(i, j), ...} with i < j.
+    Two columns are candidates if they collide in at least one band.
 
-    The signature length must divide evenly by `bands`, or you have to decide
-    what to do with the remainder. Say what you decided.
+    R5 decision:
+    If the signature length is not evenly divisible by the number
+    of bands, raise ValueError rather than silently ignoring rows.
     """
-    raise NotImplementedError("LSH candidate pairs")
+
+    if not signatures:
+        return set()
+
+    if bands <= 0:
+        raise ValueError("bands must be positive")
+
+    sig_len = len(signatures[0])
+
+    # R5: do not ignore leftover signature rows.
+    if sig_len % bands != 0:
+        raise ValueError(
+            "signature length must be evenly divisible by bands"
+        )
+
+    rows_per_band = sig_len // bands
+    candidates = set()
+
+    for band in range(bands):
+        buckets = {}
+
+        start = band * rows_per_band
+        end = start + rows_per_band
+
+        # Put documents with the same band into the same bucket.
+        for i, signature in enumerate(signatures):
+            band_value = tuple(signature[start:end])
+
+            if band_value not in buckets:
+                buckets[band_value] = []
+
+            buckets[band_value].append(i)
+
+        # Every pair in the same bucket is a candidate.
+        for bucket in buckets.values():
+            for x in range(len(bucket)):
+                for y in range(x + 1, len(bucket)):
+                    i = bucket[x]
+                    j = bucket[y]
+
+                    candidates.add((i, j))
+
+    return candidates
 
 
 # ------------------------------------------------------------------- harness
+
 def columns_from_matrix(matrix):
     n_rows, n_cols = len(matrix), len(matrix[0])
-    return [{r for r in range(n_rows) if matrix[r][c]} for c in range(n_cols)]
+
+    return [
+        {r for r in range(n_rows) if matrix[r][c]}
+        for c in range(n_cols)
+    ]
 
 
 def verify():
@@ -74,24 +146,53 @@ def verify():
 
     def check(label, got, want):
         nonlocal fails
+
         ok = got == want
-        print(f"  {'ok  ' if ok else 'FAIL'}  {label:<44} {got}"
-              + ("" if ok else f"\n{'':>54}want {want}"))
+
+        print(
+            f"  {'ok  ' if ok else 'FAIL'}  {label:<44} {got}"
+            + ("" if ok else f"\n{'':>54}want {want}")
+        )
+
         fails += not ok
 
     cols = columns_from_matrix(BOOK)
-    try:
-        # S1 = {0,3}, S4 = {0,2,3}: intersection 2, union 3
-        check("jaccard(S1, S4)", round(jaccard(cols[0], cols[3]), 4), round(2 / 3, 4))
-        check("jaccard(S1, S2)", jaccard(cols[0], cols[1]), 0.0)
-        check("jaccard on empty sets", jaccard(set(), set()), 0)
-    except NotImplementedError:
-        print("  jaccard is still a stub"); return 1
 
     try:
-        sig = minhash_signatures(cols, BOOK_HASHES, len(BOOK))
+        # S1 = {0,3}, S4 = {0,2,3}
+        # intersection = 2, union = 3
+        check(
+            "jaccard(S1, S4)",
+            round(jaccard(cols[0], cols[3]), 4),
+            round(2 / 3, 4),
+        )
+
+        check(
+            "jaccard(S1, S2)",
+            jaccard(cols[0], cols[1]),
+            0.0,
+        )
+
+        check(
+            "jaccard on empty sets",
+            jaccard(set(), set()),
+            0,
+        )
+
     except NotImplementedError:
-        print("  minhash_signatures is still a stub"); return 1
+        print("  jaccard is still a stub")
+        return 1
+
+    try:
+        sig = minhash_signatures(
+            cols,
+            BOOK_HASHES,
+            len(BOOK)
+        )
+
+    except NotImplementedError:
+        print("  minhash_signatures is still a stub")
+        return 1
 
     # Figure 3.4 in the textbook.
     check("signature of S1", sig[0], [1, 0])
@@ -100,23 +201,54 @@ def verify():
     check("signature of S4", sig[3], [1, 0])
 
     try:
-        cands = lsh_candidates([[1, 0], [3, 2], [0, 0], [1, 0]], bands=2)
-    except NotImplementedError:
-        print("  lsh_candidates is still a stub"); return 1
-    # With one row per band, S1 and S4 are identical, so they must collide.
-    check("S1 and S4 are candidates", (0, 3) in cands, True)
-    check("S1 and S2 are not", (0, 1) in cands, False)
+        cands = lsh_candidates(
+            [[1, 0], [3, 2], [0, 0], [1, 0]],
+            bands=2,
+        )
 
-    print(f"\n  {'all ok' if not fails else str(fails) + ' failed'}")
+    except NotImplementedError:
+        print("  lsh_candidates is still a stub")
+        return 1
+
+    # With one row per band, S1 and S4 are identical,
+    # so they must collide.
+    check(
+        "S1 and S4 are candidates",
+        (0, 3) in cands,
+        True,
+    )
+
+    check(
+        "S1 and S2 are not",
+        (0, 1) in cands,
+        False,
+    )
+
+    print(
+        f"\n  {'all ok' if not fails else str(fails) + ' failed'}"
+    )
+
     if not fails:
-        print("  Note that S1 and S4 agree in both signature positions, which "
-              "estimates\n  their similarity as 1.0 when it is actually 2/3. "
-              "Two hashes is not many.")
+        print(
+            "  Note that S1 and S4 agree in both signature positions, "
+            "which estimates\n"
+            "  their similarity as 1.0 when it is actually 2/3. "
+            "Two hashes is not many."
+        )
+
     return 1 if fails else 0
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--verify", action="store_true")
+
+    p.add_argument(
+        "--verify",
+        action="store_true",
+    )
+
     a = p.parse_args()
-    raise SystemExit(verify() if a.verify else p.print_help())
+
+    raise SystemExit(
+        verify() if a.verify else p.print_help()
+    )
