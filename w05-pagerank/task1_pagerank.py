@@ -1,105 +1,248 @@
+
 #!/usr/bin/env python3
-"""Week 5 · Task 1 — PageRank, and the two ways it breaks.
+"""Week 5 · Task 1 — PageRank and the two ways it breaks.
 
-Textbook §5.1 (PageRank), §5.1.3 (dead ends), §5.1.4 (spider traps).
+Textbook §5.1, §5.1.3, §5.1.4.
 
-PageRank is a random surfer following links forever, and the rank of a page is
-how often the surfer is there. As one line of linear algebra it is
-`r = M r`, and as written it does not work on the actual web.
-
-Two structures break it, and the fix for both is the same one line. Build the
-broken version first so you can see each failure, then fix it.
-
-    python3 task1_pagerank.py --verify
+Optimized using adjacency lists instead of dense matrices.
+Time complexity: O(iterations * (V + E))
+Space complexity: O(V + E)
 """
+
 import argparse
 
-# A: -> B, C      B: -> C      C: -> A
-SIMPLE = {"A": ["B", "C"], "B": ["C"], "C": ["A"]}
 
-# C has no out-links at all. Rank leaks out of the graph and everything -> 0.
-DEAD_END = {"A": ["B", "C"], "B": ["C"], "C": []}
+# Example graphs
+SIMPLE = {
+    "A": ["B", "C"],
+    "B": ["C"],
+    "C": ["A"]
+}
 
-# C and D only point at each other. They absorb everything.
-SPIDER_TRAP = {"A": ["B"], "B": ["C"], "C": ["D"], "D": ["C"]}
+DEAD_END = {
+    "A": ["B", "C"],
+    "B": ["C"],
+    "C": []
+}
+
+SPIDER_TRAP = {
+    "A": ["B"],
+    "B": ["C"],
+    "C": ["D"],
+    "D": ["C"]
+}
 
 
 def pagerank(graph, beta=0.85, iterations=100, tol=1e-10):
-    """Rank every node. Return {node: rank}, summing to 1.
+    """Calculate PageRank with teleportation and dangling-node handling.
 
-    `beta` is the probability the surfer follows a link. With probability
-    1 - beta they teleport to a node chosen uniformly.
+    beta: probability of following a link
+    iterations: maximum number of iterations
+    tol: L1 convergence tolerance
 
-    You have to handle both of these, and the textbook handles them the same way:
+    Returns:
+        {node: rank}
 
-      dead ends    a node with no out-links. Where does its rank go, and where
-                   should it go instead?
-      spider traps a group of nodes that only link to each other. Without
-                   teleporting, they end up with all of it
-
-    Stop early when the ranks stop moving - `tol` is the L1 change below which
-    you should call it converged. Return the ranks, and set `pagerank.iterations`
-    to how many you actually used, because Task 2 measures that.
+    Also stores actual iteration count in pagerank.iterations.
     """
-    raise NotImplementedError("implement PageRank")
+
+    nodes = list(graph)
+    n = len(nodes)
+
+    if n == 0:
+        pagerank.iterations = 0
+        return {}
+
+    if not 0 <= beta <= 1:
+        raise ValueError("beta must be between 0 and 1")
+
+    # Map node labels to integer indices.
+    index = {node: i for i, node in enumerate(nodes)}
+
+    # Build adjacency lists once.
+    adjacency = [
+        [index[v] for v in graph[u] if v in index]
+        for u in nodes
+    ]
+
+    # Initial uniform PageRank distribution.
+    ranks = [1.0 / n] * n
+
+    teleport = (1.0 - beta) / n
+    pagerank.iterations = 0
+
+    for step in range(iterations):
+
+        # Collect rank from dangling nodes.
+        dangling_mass = sum(
+            ranks[i]
+            for i, outs in enumerate(adjacency)
+            if not outs
+        )
+
+        # Teleportation plus redistribution of dangling mass.
+        base = teleport + beta * dangling_mass / n
+        new_ranks = [base] * n
+
+        # Distribute rank along outgoing edges.
+        for i, outs in enumerate(adjacency):
+            if not outs:
+                continue
+
+            share = beta * ranks[i] / len(outs)
+
+            for j in outs:
+                new_ranks[j] += share
+
+        # L1 distance between consecutive iterations.
+        change = sum(
+            abs(new_ranks[i] - ranks[i])
+            for i in range(n)
+        )
+
+        ranks = new_ranks
+        pagerank.iterations = step + 1
+
+        # Stop early when converged.
+        if change < tol:
+            break
+
+    return dict(zip(nodes, ranks))
 
 
 def pagerank_no_teleport(graph, iterations=100):
-    """The broken version: beta = 1, no teleporting. Build this too.
+    """Broken PageRank without teleportation.
 
-    It exists so you can watch both failures happen rather than take them on
-    trust. The harness checks that it really does fail.
+    Dead ends lose rank.
+    Spider traps absorb rank.
+
+    This function intentionally does NOT normalize rank.
     """
-    raise NotImplementedError("implement the broken version")
+
+    nodes = list(graph)
+    n = len(nodes)
+
+    if n == 0:
+        return {}
+
+    index = {node: i for i, node in enumerate(nodes)}
+
+    adjacency = [
+        [index[v] for v in graph[u] if v in index]
+        for u in nodes
+    ]
+
+    ranks = [1.0 / n] * n
+
+    for _ in range(iterations):
+        new_ranks = [0.0] * n
+
+        for i, outs in enumerate(adjacency):
+
+            # Dead ends lose their rank completely.
+            if not outs:
+                continue
+
+            share = ranks[i] / len(outs)
+
+            for j in outs:
+                new_ranks[j] += share
+
+        ranks = new_ranks
+
+    return dict(zip(nodes, ranks))
 
 
-# ------------------------------------------------------------------- harness
+# ------------------------------------------------------------
+# Verification harness
+# ------------------------------------------------------------
+
 def verify():
     fails = 0
 
     def check(label, ok, detail=""):
         nonlocal fails
-        print(f"  {'ok  ' if ok else 'FAIL'}  {label:<48} {detail}")
+
+        print(
+            f"  {'ok  ' if ok else 'FAIL'}  "
+            f"{label:<48} {detail}"
+        )
+
         fails += not ok
 
     try:
         r = pagerank(SIMPLE)
     except NotImplementedError:
-        print("  pagerank is still a stub"); return 1
+        print("  pagerank is still a stub")
+        return 1
 
-    check("ranks sum to 1", abs(sum(r.values()) - 1) < 1e-6, f"{sum(r.values()):.6f}")
-    check("every node ranked", set(r) == set(SIMPLE), sorted(r))
-    # C is pointed at by both A and B, so it has to come first.
-    check("C outranks A and B", r["C"] > r["A"] and r["C"] > r["B"],
-          {k: round(v, 4) for k, v in sorted(r.items())})
+    check(
+        "ranks sum to 1",
+        abs(sum(r.values()) - 1) < 1e-6,
+        f"{sum(r.values()):.6f}"
+    )
+
+    check(
+        "every node ranked",
+        set(r) == set(SIMPLE),
+        sorted(r)
+    )
+
+    check(
+        "C outranks A and B",
+        r["C"] > r["A"] and r["C"] > r["B"],
+        {k: round(v, 4) for k, v in sorted(r.items())}
+    )
 
     try:
         broken = pagerank_no_teleport(DEAD_END)
     except NotImplementedError:
-        print("  pagerank_no_teleport is still a stub"); return 1
-    check("without the fix, a dead end drains the graph",
-          sum(broken.values()) < 0.5, f"total rank {sum(broken.values()):.4f}")
+        print("  pagerank_no_teleport is still a stub")
+        return 1
+
+    check(
+        "without the fix, a dead end drains the graph",
+        sum(broken.values()) < 0.5,
+        f"total rank {sum(broken.values()):.4f}"
+    )
 
     fixed = pagerank(DEAD_END)
-    check("with the fix, rank is conserved",
-          abs(sum(fixed.values()) - 1) < 1e-6, f"{sum(fixed.values()):.6f}")
+
+    check(
+        "with the fix, rank is conserved",
+        abs(sum(fixed.values()) - 1) < 1e-6,
+        f"{sum(fixed.values()):.6f}"
+    )
 
     trapped = pagerank_no_teleport(SPIDER_TRAP)
-    check("without the fix, a spider trap takes everything",
-          trapped["C"] + trapped["D"] > 0.95,
-          f"C+D = {trapped['C'] + trapped['D']:.4f}")
+
+    check(
+        "without the fix, a spider trap takes everything",
+        trapped["C"] + trapped["D"] > 0.95,
+        f"C+D = {trapped['C'] + trapped['D']:.4f}"
+    )
 
     untrapped = pagerank(SPIDER_TRAP)
-    check("with the fix, A and B keep some rank",
-          untrapped["A"] > 0.01 and untrapped["B"] > 0.01,
-          {k: round(v, 4) for k, v in sorted(untrapped.items())})
 
-    print(f"\n  {'all ok' if not fails else str(fails) + ' failed'}")
+    check(
+        "with the fix, A and B keep some rank",
+        untrapped["A"] > 0.01 and untrapped["B"] > 0.01,
+        {k: round(v, 4) for k, v in sorted(untrapped.items())}
+    )
+
+    print(
+        f"\n  {'all ok' if not fails else str(fails) + ' failed'}"
+    )
+
     return 1 if fails else 0
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--verify", action="store_true")
+
     a = p.parse_args()
-    raise SystemExit(verify() if a.verify else p.print_help())
+
+    raise SystemExit(
+        verify() if a.verify else p.print_help()
+    )

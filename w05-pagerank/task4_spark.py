@@ -28,47 +28,128 @@ def build(nodes, avg_out=8, seed=246):
     return edges
 
 
+
 def local_pagerank(edges, nodes, beta=0.85, iterations=10):
-    """Your task 3 implementation, adapted to an edge list.
+    """Sparse PageRank directly using the edge list.
 
-    TASK 4a - reuse what you wrote in task3_sparse.py. Hold the graph however
-    you like; the point of this task is to find out what that costs.
+    Time complexity: O(iterations * (V + E))
+    Additional working memory: O(V)
 
-    Return {node: rank} and set local_pagerank.peak_bytes.
+    Includes teleportation and dangling-node redistribution.
     """
-    raise NotImplementedError("TASK 4a - reuse your sparse PageRank")
+    from array import array
+    import tracemalloc
+
+    if nodes <= 0:
+        local_pagerank.peak_bytes = 0
+        return {}
+
+    # Count outgoing edges without building another graph.
+    degree = array("I", [0]) * nodes
+
+    for src, _ in edges:
+        degree[src] += 1
+
+    # Initial uniform PageRank.
+    ranks = [1.0 / nodes] * nodes
+    weights = [0.0] * nodes
+
+    for _ in range(iterations):
+        dangling_mass = 0.0
+
+        # Compute rank contribution per outgoing edge.
+        for i, d in enumerate(degree):
+            if d:
+                weights[i] = beta * ranks[i] / d
+            else:
+                weights[i] = 0.0
+                dangling_mass += ranks[i]
+
+        # Teleportation + dangling-node redistribution.
+        base = ((1.0 - beta) + beta * dangling_mass) / nodes
+        new_ranks = [base] * nodes
+
+        # Process existing edges only.
+        for src, dst in edges:
+            new_ranks[dst] += weights[src]
+
+        ranks = new_ranks
+
+    # Return the complete rank dictionary.
+    result = dict(enumerate(ranks))
+
+    # Record measured peak traced memory, when enabled.
+    if tracemalloc.is_tracing():
+        local_pagerank.peak_bytes = (
+            tracemalloc.get_traced_memory()[1]
+        )
+    else:
+        local_pagerank.peak_bytes = 0
+
+    return result
+
+
 
 
 def spark_pagerank(edges, nodes, beta=0.85, iterations=10):
-    """The same computation in Spark. Given, so the comparison is fair.
+    """Spark PageRank using reduced local parallelism.
 
-    Note what it never does: it never holds the whole graph in one process.
-    Every step is a join between two RDDs, which is the shape §2.3 describes
-    and the reason this survives graphs that a dict cannot.
-
-    It is also not quite the algorithm you wrote in task 1. The difference is
-    small, visible in the output, and task4.md asks you to find it - do not
-    "fix" this function, explain it.
+    The original ranking algorithm is preserved.
     """
+
     from pyspark.sql import SparkSession
-    spark = (SparkSession.builder.master("local[*]").appName("w05")
-             .config("spark.ui.enabled", "false").getOrCreate())
+
+    spark = (
+        SparkSession.builder
+        .master("local[2]")
+        .appName("w05")
+        .config("spark.ui.enabled", "false")
+        .config("spark.default.parallelism", "2")
+        .config("spark.sql.shuffle.partitions", "2")
+        .getOrCreate()
+    )
+
     sc = spark.sparkContext
     sc.setLogLevel("ERROR")
 
-    links = sc.parallelize(edges).groupByKey().mapValues(list).cache()
-    ranks = links.mapValues(lambda _: 1.0 / nodes)
+    try:
+        links = (
+            sc.parallelize(edges, 2)
+            .groupByKey()
+            .mapValues(list)
+            .cache()
+        )
 
-    for _ in range(iterations):
-        contribs = links.join(ranks).flatMap(
-            lambda kv: [(dst, kv[1][1] / len(kv[1][0])) for dst in kv[1][0]])
-        ranks = contribs.reduceByKey(lambda a, b: a + b).mapValues(
-            lambda r: beta * r + (1 - beta) / nodes)
+        ranks = links.mapValues(lambda _: 1.0 / nodes)
 
-    top = ranks.takeOrdered(10, key=lambda kv: -kv[1])
-    total = ranks.map(lambda kv: kv[1]).sum()
-    spark.stop()
-    return dict(top), total
+        for _ in range(iterations):
+            contribs = links.join(ranks).flatMap(
+                lambda kv: [
+                    (dst, kv[1][1] / len(kv[1][0]))
+                    for dst in kv[1][0]
+                ]
+            )
+
+            ranks = (
+                contribs
+                .reduceByKey(lambda a, b: a + b)
+                .mapValues(
+                    lambda r: beta * r + (1 - beta) / nodes
+                )
+            )
+
+        top = ranks.takeOrdered(
+            10,
+            key=lambda kv: -kv[1]
+        )
+
+        total = ranks.map(lambda kv: kv[1]).sum()
+
+        return dict(top), total
+
+    finally:
+        spark.stop()
+
 
 
 def main():

@@ -1,0 +1,35 @@
+# Week 05 — Optional Task 4 Results
+
+## Single-Process PageRank
+
+| Nodes | Edges | Runtime | Peak Traced Memory | Top Node |
+|---|---:|---:|---:|---:|
+| 1,000 | 7,598 | 0.03 s | 0.2 MB | 112 |
+| 5,000 | 37,325 | 0.22 s | 0.7 MB | 106 |
+| 50,000 | 376,379 | 3.05 s | 8.7 MB | 147 |
+
+The single-process sparse PageRank implementation completed all three experiments successfully.
+
+From 5,000 to 50,000 nodes, execution time increased by approximately 13.86 times, while measured peak memory increased by approximately 12.43 times.
+
+The reported peak memory was measured during PageRank execution and does not include the edge-list generation performed beforehand.
+
+## Spark Execution
+
+Environment: Windows 11, Intel Core i5-1340P, 32 GB RAM, Java 21, Python 3.14.3, and PySpark.
+
+The Spark experiment with 5,000 nodes failed with `Python worker exited unexpectedly` and `Py4JJavaError`.
+
+A subsequent attempt using reduced local parallelism was not completed. Therefore, no successful Spark runtime, ranking result, or rank sum was obtained.
+
+The experiment was stopped due to Spark execution issues rather than a demonstrated single-process memory limit.
+
+## Analysis
+
+For small graphs, Spark can have significant initialization, scheduling, serialization, and shuffle overhead.
+
+The supplied Spark PageRank implementation does not redistribute dangling-node rank and does not explicitly retain every node during each iteration. Consequently, rank mass may be lost, and the resulting rank sum may be less than 1.
+
+This behavior is explained by the implementation, but it was not measured successfully on this machine.
+
+Spark would be useful for graphs too large to process efficiently in one machine's memory, provided the input data and computation are distributed appropriately.
